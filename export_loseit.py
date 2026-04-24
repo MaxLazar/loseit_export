@@ -228,20 +228,32 @@ def deploy_to_github(env_path: Path) -> None:
     except (subprocess.CalledProcessError, FileNotFoundError):
         raise SystemExit("GitHub CLI (gh) not found. Install from: https://cli.github.com/")
 
+    auth_check = subprocess.run(["gh", "auth", "status"], capture_output=True)
+    if auth_check.returncode != 0:
+        raise SystemExit(
+            "GitHub CLI is not authenticated.\n"
+            "Run:  gh auth login\n"
+            "Then re-run:  python3.12 export_loseit.py --deploy"
+        )
+
     print(f"Configuring GitHub Actions for: {repo}")
 
     for secret_name, secret_value in [("LOSEIT_EMAIL", email), ("LOSEIT_PASSWORD", password)]:
         print(f"  Setting secret {secret_name}...")
-        subprocess.run(
+        result = subprocess.run(
             ["gh", "secret", "set", secret_name, "--body", secret_value, "--repo", repo],
-            check=True,
+            capture_output=True, text=True,
         )
+        if result.returncode != 0:
+            raise SystemExit(f"Failed to set {secret_name}: {result.stderr.strip()}")
 
     print(f"  Setting variable DAYS_RANGE={days_range}...")
-    subprocess.run(
+    result = subprocess.run(
         ["gh", "variable", "set", "DAYS_RANGE", "--body", days_range, "--repo", repo],
-        check=True,
+        capture_output=True, text=True,
     )
+    if result.returncode != 0:
+        raise SystemExit(f"Failed to set DAYS_RANGE variable: {result.stderr.strip()}")
 
     print("\nDone! Secrets and variables are configured.")
     print(f"Workflow: https://github.com/{repo}/actions")

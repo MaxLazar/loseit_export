@@ -1,7 +1,7 @@
 # Environment / secrets
 .env
 
-# Prompt file
+
 PROMPT.MD
 
 # Output reports (keep folder, ignore contents)

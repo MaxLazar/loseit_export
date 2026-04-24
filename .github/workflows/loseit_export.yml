@@ -1,0 +1,55 @@
+name: Lose It! Daily Nutrition Export
+
+on:
+  schedule:
+    # Runs every day at 08:00 UTC
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Number of days to include (leave blank to use DAYS_RANGE variable)'
+        required: false
+        type: string
+      from_date:
+        description: 'Start date YYYY-MM-DD (overrides days)'
+        required: false
+        type: string
+      to_date:
+        description: 'End date YYYY-MM-DD (overrides days)'
+        required: false
+        type: string
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build CLI arguments
+        id: args
+        run: |
+          ARGS="--github-summary"
+          if [ -n "${{ inputs.from_date }}" ] && [ -n "${{ inputs.to_date }}" ]; then
+            ARGS="$ARGS --from-date ${{ inputs.from_date }} --to-date ${{ inputs.to_date }}"
+          elif [ -n "${{ inputs.days }}" ]; then
+            ARGS="$ARGS --days ${{ inputs.days }}"
+          fi
+          echo "args=$ARGS" >> "$GITHUB_OUTPUT"
+
+      - name: Export nutrition data
+        env:
+          LOSEIT_EMAIL: ${{ secrets.LOSEIT_EMAIL }}
+          LOSEIT_PASSWORD: ${{ secrets.LOSEIT_PASSWORD }}
+          DAYS_RANGE: ${{ vars.DAYS_RANGE || '7' }}
+        run: python export_loseit.py ${{ steps.args.outputs.args }}

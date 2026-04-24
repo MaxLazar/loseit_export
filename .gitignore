@@ -1,0 +1,35 @@
+# Environment / secrets
+.env
+
+# Prompt file
+PROMPT.MD
+
+# Output reports (keep folder, ignore contents)
+reports/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.claude/settings.local.json

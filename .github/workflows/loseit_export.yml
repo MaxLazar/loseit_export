@@ -2,8 +2,12 @@ name: Lose It! Daily Nutrition Export
 
 on:
   schedule:
-    # Runs every day at 08:00 UTC
-    - cron: '0 8 * * *'
+    # 12:00 EST (17:00 UTC)
+    - cron: '0 17 * * *'
+    # 17:00 EST (22:00 UTC)
+    - cron: '0 22 * * *'
+    # 20:00 EST (01:00 UTC next day)
+    - cron: '0 1 * * *'
   workflow_dispatch:
     inputs:
       days:
@@ -57,5 +61,7 @@ jobs:
         env:
           LOSEIT_EMAIL: ${{ secrets.LOSEIT_EMAIL }}
           LOSEIT_PASSWORD: ${{ secrets.LOSEIT_PASSWORD }}
-          DAYS_RANGE: ${{ vars.DAYS_RANGE || '7' }}
+          DAYS_RANGE: ${{ vars.DAYS_RANGE || '1' }}
+          INTERVALS_ATHLETE_ID: ${{ secrets.INTERVALS_ATHLETE_ID }}
+          INTERVALS_API_KEY: ${{ secrets.INTERVALS_API_KEY }}
         run: python export_loseit.py ${{ steps.args.outputs.args }}

@@ -23,6 +23,7 @@ load_dotenv()
 
 LOGIN_URL = "https://my.loseit.com/login"
 EXPORT_URL = "https://www.loseit.com/export/data"
+INTERVALS_BASE = "https://intervals.icu/api/v1"
 
 HEADERS = {
     "User-Agent": (
@@ -38,7 +39,7 @@ HEADERS = {
 # ---------------------------------------------------------------------------
 
 def get_date_range(days: int | None = None) -> tuple[datetime, datetime]:
-    days = days or int(os.getenv("DAYS_RANGE", "7"))
+    days = days or int(os.getenv("DAYS_RANGE", "1"))
     end = datetime.now().date()
     start = end - timedelta(days=days - 1)
     return (
@@ -208,6 +209,59 @@ def print_summary(df: pd.DataFrame, output_path: Path | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Intervals.icu integration
+# ---------------------------------------------------------------------------
+
+def post_to_intervals(df: pd.DataFrame, date: datetime, athlete_id: str, api_key: str) -> None:
+    """Create or update a 'Nutrition' NOTE event in intervals.icu for the given date."""
+    auth = ("API_KEY", api_key)
+    date_str = date.strftime("%Y-%m-%d")
+    events_url = f"{INTERVALS_BASE}/athlete/{athlete_id}/events"
+
+    # Find existing 'Nutrition' note for this date
+    resp = requests.get(
+        events_url,
+        auth=auth,
+        params={"oldest": date_str, "newest": date_str},
+        timeout=30,
+    )
+    print(f"  GET {resp.url} → {resp.status_code}")
+    if not resp.ok:
+        print(f"  Response: {resp.text[:500]}")
+        resp.raise_for_status()
+
+    events = resp.json()
+    event_labels = [f"{e.get('category')} / {e.get('name')}" for e in events]
+    print(f"  Events on {date_str}: {event_labels}")
+
+    existing = next(
+        (e for e in events if e.get("category") == "NOTE" and e.get("name") == "Nutrition"),
+        None,
+    )
+
+    payload = {
+        "start_date_local": f"{date_str}T00:00:00",
+        "category": "NOTE",
+        "name": "Nutrition",
+        "description": df.to_csv(index=False),
+    }
+
+    if existing:
+        resp = requests.put(f"{events_url}/{existing['id']}", auth=auth, json=payload, timeout=30)
+        action = "updated"
+    else:
+        resp = requests.post(events_url, auth=auth, json=payload, timeout=30)
+        action = "created"
+
+    print(f"  {action.upper()} → {resp.status_code}")
+    if not resp.ok:
+        print(f"  Response: {resp.text[:500]}")
+        resp.raise_for_status()
+
+    print(f"Intervals.icu note {action} for {date_str}")
+
+
+# ---------------------------------------------------------------------------
 # GitHub Actions deploy helper
 # ---------------------------------------------------------------------------
 
@@ -217,9 +271,17 @@ def deploy_to_github(env_path: Path) -> None:
     email = os.getenv("LOSEIT_EMAIL")
     password = os.getenv("LOSEIT_PASSWORD")
     repo = os.getenv("GITHUB_REPO")  # owner/repo
-    days_range = os.getenv("DAYS_RANGE", "7")
+    days_range = os.getenv("DAYS_RANGE", "1")
+    athlete_id = os.getenv("INTERVALS_ATHLETE_ID")
+    api_key = os.getenv("INTERVALS_API_KEY")
 
-    missing = [k for k, v in {"LOSEIT_EMAIL": email, "LOSEIT_PASSWORD": password, "GITHUB_REPO": repo}.items() if not v]
+    missing = [k for k, v in {
+        "LOSEIT_EMAIL": email,
+        "LOSEIT_PASSWORD": password,
+        "GITHUB_REPO": repo,
+        "INTERVALS_ATHLETE_ID": athlete_id,
+        "INTERVALS_API_KEY": api_key,
+    }.items() if not v]
     if missing:
         raise SystemExit(f"Missing required .env variables for --deploy: {', '.join(missing)}")
 
@@ -238,7 +300,12 @@ def deploy_to_github(env_path: Path) -> None:
 
     print(f"Configuring GitHub Actions for: {repo}")
 
-    for secret_name, secret_value in [("LOSEIT_EMAIL", email), ("LOSEIT_PASSWORD", password)]:
+    for secret_name, secret_value in [
+        ("LOSEIT_EMAIL", email),
+        ("LOSEIT_PASSWORD", password),
+        ("INTERVALS_ATHLETE_ID", athlete_id),
+        ("INTERVALS_API_KEY", api_key),
+    ]:
         print(f"  Setting secret {secret_name}...")
         result = subprocess.run(
             ["gh", "secret", "set", secret_name, "--body", secret_value, "--repo", repo],
@@ -268,12 +335,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Export Lose It! nutrition data filtered by date range."
     )
-    parser.add_argument("--days", type=int, help="Number of days to include (default: 7 or DAYS_RANGE env var)")
+    parser.add_argument("--days", type=int, help="Number of days to include (default: 1 or DAYS_RANGE env var)")
     parser.add_argument("--from-date", metavar="YYYY-MM-DD", help="Start date (overrides --days)")
     parser.add_argument("--to-date", metavar="YYYY-MM-DD", help="End date (overrides --days)")
     parser.add_argument("--output", metavar="DIR", help="Output directory (default: reports/)")
     parser.add_argument("--github-summary", action="store_true", help="Write output to GITHUB_STEP_SUMMARY")
     parser.add_argument("--deploy", action="store_true", help="Push secrets/variables to GitHub Actions from .env")
+    parser.add_argument("--intervals", action=argparse.BooleanOptionalAction, default=True,
+                        help="Upload to intervals.icu (default: true, disable with --no-intervals)")
     parser.add_argument("--debug", action="store_true", help="Show browser window during login (for troubleshooting)")
     args = parser.parse_args()
 
@@ -315,6 +384,14 @@ def main() -> None:
         output_dir = Path(args.output) if args.output else Path("reports")
         output_path = save_report(df, start_date, end_date, output_dir)
         print_summary(df, output_path)
+
+    # Post to intervals.icu if enabled and credentials are present
+    if args.intervals:
+        athlete_id = os.getenv("INTERVALS_ATHLETE_ID")
+        api_key = os.getenv("INTERVALS_API_KEY")
+        if athlete_id and api_key:
+            print("Posting to intervals.icu...")
+            post_to_intervals(df, end_date, athlete_id, api_key)
 
 
 if __name__ == "__main__":

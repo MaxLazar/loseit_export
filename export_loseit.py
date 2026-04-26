@@ -79,10 +79,16 @@ def authenticate(session: requests.Session, email: str, password: str, debug: bo
         # Password field
         page.locator('input[type="password"]').first.fill(password)
 
-        # Submit — wrap in expect_navigation to cleanly track the redirect to dashboard
+        # Click submit button if present, otherwise press Enter
+        submit = page.locator('button[type="submit"], input[type="submit"]')
+        if submit.count() > 0:
+            submit.first.click()
+        else:
+            page.locator('input[type="password"]').first.press("Enter")
+
+        # wait_for_url works for both full HTTP navigations and SPA client-side routing
         try:
-            with page.expect_navigation(timeout=20_000):
-                page.locator('input[type="password"]').first.press("Enter")
+            page.wait_for_url(lambda url: "login" not in url.lower(), timeout=30_000)
         except PWTimeout:
             raise SystemExit("Login timed out — check LOSEIT_EMAIL and LOSEIT_PASSWORD.")
 
@@ -244,6 +250,7 @@ def post_to_intervals(df: pd.DataFrame, date: datetime, athlete_id: str, api_key
         "category": "NOTE",
         "name": "Nutrition",
         "description": df.to_csv(index=False),
+        "color": "#9467bd",
     }
 
     if existing:

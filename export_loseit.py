@@ -14,6 +14,7 @@ import urllib.parse
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -38,13 +39,14 @@ HEADERS = {
 # Date range helpers
 # ---------------------------------------------------------------------------
 
-def get_date_range(days: int | None = None) -> tuple[datetime, datetime]:
+def get_date_range(days: int | None = None, tz_name: str | None = None) -> tuple[datetime, datetime]:
+    tz = ZoneInfo(tz_name or os.getenv("TIMEZONE", "America/New_York"))
     days = days or int(os.getenv("DAYS_RANGE", "1"))
-    end = datetime.now().date()
-    start = end - timedelta(days=days - 1)
+    today = datetime.now(tz).date()
+    start = today - timedelta(days=days - 1)
     return (
         datetime(start.year, start.month, start.day, 0, 0, 0),
-        datetime(end.year, end.month, end.day, 23, 59, 59),
+        datetime(today.year, today.month, today.day, 23, 59, 59),
     )
 
 
@@ -162,6 +164,15 @@ def process_export(zip_data: bytes, start_date: datetime, end_date: datetime) ->
 # Output helpers
 # ---------------------------------------------------------------------------
 
+def build_food_report(df: pd.DataFrame) -> pd.DataFrame:
+    cols_to_drop = [c for c in df.columns if c.lower() in ("icon", "meal") or "date" in c.lower()]
+    result = df.drop(columns=cols_to_drop, errors="ignore")
+    name_col = next((c for c in result.columns if c.lower() == "name"), None)
+    if name_col:
+        result = result.drop_duplicates(subset=[name_col]).reset_index(drop=True)
+    return result
+
+
 def save_report(df: pd.DataFrame, start: datetime, end: datetime, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     fname = f"{start.strftime('%Y%m%d')}-{end.strftime('%Y%m%d')}_nutrition.csv"
@@ -189,7 +200,7 @@ def write_github_summary(df: pd.DataFrame, start: datetime, end: datetime) -> No
         f"**Entries logged:** {len(df)}  ",
     ]
     if cal_col:
-        total_cal = df[cal_col].sum()
+        total_cal = pd.to_numeric(df[cal_col], errors="coerce").sum()
         lines.append(f"**Total calories:** {total_cal:,.0f}  ")
         if unique_days:
             lines.append(f"**Daily average:** {total_cal / unique_days:,.0f} kcal  ")
@@ -348,9 +359,12 @@ def main() -> None:
     parser.add_argument("--output", metavar="DIR", help="Output directory (default: reports/)")
     parser.add_argument("--github-summary", action="store_true", help="Write output to GITHUB_STEP_SUMMARY")
     parser.add_argument("--deploy", action="store_true", help="Push secrets/variables to GitHub Actions from .env")
+    parser.add_argument("--timezone", metavar="TZ", help="Timezone name (default: TIMEZONE env or America/New_York)")
     parser.add_argument("--intervals", action=argparse.BooleanOptionalAction, default=True,
                         help="Upload to intervals.icu (default: true, disable with --no-intervals)")
     parser.add_argument("--debug", action="store_true", help="Show browser window during login (for troubleshooting)")
+    parser.add_argument("--food-report", action="store_true",
+                        help="Save unique food list to food/ (drops Icon/Meal/Date, deduplicates by Name; default --days 9)")
     args = parser.parse_args()
 
     if args.deploy:
@@ -366,7 +380,8 @@ def main() -> None:
         start_date = datetime.strptime(args.from_date, "%Y-%m-%d")
         end_date = datetime.strptime(args.to_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
     else:
-        start_date, end_date = get_date_range(args.days)
+        default_days = 9 if args.food_report and args.days is None else args.days
+        start_date, end_date = get_date_range(default_days, tz_name=args.timezone)
 
     print(f"Date range : {start_date.date()} → {end_date.date()}")
     print("Authenticating with Lose It!...")
@@ -384,7 +399,16 @@ def main() -> None:
         print("No entries found for the selected date range.")
         sys.exit(0)
 
-    if args.github_summary:
+    if args.food_report:
+        food_df = build_food_report(df)
+        food_dir = Path("food")
+        food_dir.mkdir(exist_ok=True)
+        fname = f"foods_{start_date.strftime('%Y%m%d')}-{end_date.strftime('%Y%m%d')}.csv"
+        food_path = food_dir / fname
+        food_df.to_csv(food_path, index=False)
+        print(f"Unique foods   : {len(food_df)}")
+        print(f"Saved          : {food_path}")
+    elif args.github_summary:
         write_github_summary(df, start_date, end_date)
         print_summary(df)
     else:
@@ -392,13 +416,23 @@ def main() -> None:
         output_path = save_report(df, start_date, end_date, output_dir)
         print_summary(df, output_path)
 
-    # Post to intervals.icu if enabled and credentials are present
+    # Post to intervals.icu — one note per day in the range
     if args.intervals:
         athlete_id = os.getenv("INTERVALS_ATHLETE_ID")
         api_key = os.getenv("INTERVALS_API_KEY")
         if athlete_id and api_key:
             print("Posting to intervals.icu...")
-            post_to_intervals(df, end_date, athlete_id, api_key)
+            date_col = next((c for c in df.columns if "date" in c.lower()), None)
+            day = start_date
+            while day.date() <= end_date.date():
+                day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+                day_end = day.replace(hour=23, minute=59, second=59, microsecond=0)
+                day_df = df[(df[date_col] >= day_start) & (df[date_col] <= day_end)]
+                if not day_df.empty:
+                    post_to_intervals(day_df, day, athlete_id, api_key)
+                else:
+                    print(f"  No entries for {day.date()}, skipping")
+                day += timedelta(days=1)
 
 
 if __name__ == "__main__":

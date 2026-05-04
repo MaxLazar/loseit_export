@@ -6,8 +6,8 @@ on:
     - cron: '0 17 * * *'
     # 17:00 EST (22:00 UTC)
     - cron: '0 22 * * *'
-    # 20:00 EST (01:00 UTC next day)
-    - cron: '0 1 * * *'
+    # 20:00 EST (02:00 UTC next day)
+    - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       days:

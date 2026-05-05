@@ -66,6 +66,8 @@ def authenticate(session: requests.Session, email: str, password: str, debug: bo
     dashboard_url = "https://www.loseit.com/"
     login_url = f"{LOGIN_URL}?r={urllib.parse.quote(dashboard_url)}"
 
+    screenshot_path = "/tmp/loseit_login_failure.png"
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not debug)
         ctx = browser.new_context()
@@ -73,31 +75,56 @@ def authenticate(session: requests.Session, email: str, password: str, debug: bo
 
         page.goto(login_url, wait_until="domcontentloaded", timeout=30_000)
 
-        # Email field
-        page.locator(
-            'input[type="email"], input[name="email"], input[placeholder*="email" i]'
-        ).first.fill(email)
+        email_selector = 'input[type="email"], input[name="email"], input[placeholder*="email" i]'
+        pw_selector = 'input[type="password"]'
+        submit_selector = 'button[type="submit"], input[type="submit"]'
 
-        # Password field
-        page.locator('input[type="password"]').first.fill(password)
+        # Fill email
+        email_field = page.locator(email_selector).first
+        email_field.fill(email)
 
-        # Click submit button if present, otherwise press Enter
-        submit = page.locator('button[type="submit"], input[type="submit"]')
+        # Some login pages are multi-step: email → submit → password → submit.
+        # Try clicking the submit/next button first; if the password field then
+        # becomes visible we're in multi-step mode, otherwise fill it directly.
+        submit = page.locator(submit_selector)
         if submit.count() > 0:
             submit.first.click()
         else:
-            page.locator('input[type="password"]').first.press("Enter")
+            email_field.press("Enter")
+
+        # Wait briefly for a possible page transition before looking for password
+        try:
+            page.wait_for_selector(pw_selector, timeout=5_000)
+        except PWTimeout:
+            pass  # password field was already present before the click
+
+        pw_field = page.locator(pw_selector).first
+        pw_field.fill(password)
+
+        submit2 = page.locator(submit_selector)
+        if submit2.count() > 0:
+            submit2.first.click()
+        else:
+            pw_field.press("Enter")
 
         # wait_for_url works for both full HTTP navigations and SPA client-side routing
         try:
             page.wait_for_url(lambda url: "login" not in url.lower(), timeout=30_000)
         except PWTimeout:
-            raise SystemExit("Login timed out — check LOSEIT_EMAIL and LOSEIT_PASSWORD.")
+            page.screenshot(path=screenshot_path, full_page=True)
+            raise SystemExit(
+                f"Login timed out — check LOSEIT_EMAIL and LOSEIT_PASSWORD.\n"
+                f"Screenshot saved to {screenshot_path}"
+            )
 
         page.wait_for_load_state("networkidle", timeout=20_000)
 
         if "login" in page.url.lower():
-            raise SystemExit("Login failed — check LOSEIT_EMAIL and LOSEIT_PASSWORD.")
+            page.screenshot(path=screenshot_path, full_page=True)
+            raise SystemExit(
+                f"Login failed — check LOSEIT_EMAIL and LOSEIT_PASSWORD.\n"
+                f"Screenshot saved to {screenshot_path}"
+            )
 
         # Transfer all cookies (across .loseit.com, my.loseit.com, www.loseit.com)
         for c in ctx.cookies():
@@ -146,7 +173,7 @@ def process_export(zip_data: bytes, start_date: datetime, end_date: datetime) ->
                 f"food-logs.csv not found in archive. Contents: {zf.namelist()}"
             )
         with zf.open(csv_name) as f:
-            df = pd.read_csv(f)
+            df = pd.read_csv(f, thousands=",")
 
     date_col = next(
         (c for c in df.columns if "date" in c.lower()),
@@ -217,7 +244,7 @@ def print_summary(df: pd.DataFrame, output_path: Path | None = None) -> None:
 
     print(f"\nEntries: {len(df)}")
     if cal_col:
-        total = df[cal_col].sum()
+        total = pd.to_numeric(df[cal_col], errors="coerce").sum()
         print(f"Total calories : {total:,.0f}")
         if unique_days:
             print(f"Daily average  : {total / unique_days:,.0f} kcal")

@@ -65,3 +65,11 @@ jobs:
           INTERVALS_ATHLETE_ID: ${{ secrets.INTERVALS_ATHLETE_ID }}
           INTERVALS_API_KEY: ${{ secrets.INTERVALS_API_KEY }}
         run: python export_loseit.py ${{ steps.args.outputs.args }}
+
+      - name: Upload login failure screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: login-failure-screenshot
+          path: /tmp/loseit_login_failure.png
+          if-no-files-found: ignore
